@@ -907,6 +907,326 @@ Search Terms:
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
                 st.exception(e)
+    
+    # BULK GENERATION SECTION
+    st.divider()
+    st.header("📦 Bulk Generation")
+    
+    with st.expander("🔥 Generate Multiple Designs in Batch", expanded=False):
+        st.markdown("""
+        **Generate multiple design combinations at once!**
+        
+        Perfect for:
+        - Testing different style/niche combinations
+        - Creating design variations for your store
+        - Building a design library
+        
+        ⚠️ **Rate Limiting:** 10-15 second delay between each generation (respects API limits)
+        """)
+        
+        bulk_col1, bulk_col2 = st.columns([1, 1])
+        
+        with bulk_col1:
+            st.subheader("Define Combinations")
+            
+            # Initialize session state for combinations
+            if 'bulk_combinations' not in st.session_state:
+                st.session_state.bulk_combinations = []
+            
+            # Style selection for combination
+            combo_style_options = ["minimalist", "vintage", "modern", "retro", "abstract", 
+                                   "geometric", "watercolor", "line art", "grunge", "pop art",
+                                   "hand-drawn", "gradient", "3D", "flat design", "isometric",
+                                   "✨ Custom"]
+            
+            combo_style = st.selectbox("Style", combo_style_options, key="bulk_combo_style")
+            
+            if combo_style == "✨ Custom":
+                combo_style = st.text_input("Enter Custom Style", key="bulk_custom_style", placeholder="e.g., cyberpunk, art deco, bauhaus")
+                if not combo_style.strip():
+                    combo_style = "modern"
+            
+            # Niche selection for combination
+            combo_niche_options = ["fitness", "motivation", "coffee", "cats", "dogs", "gaming", 
+                                   "travel", "nature", "yoga", "music", "coding", "cooking",
+                                   "mental health", "astrology", "books", "plants",
+                                   "✨ Custom"]
+            
+            combo_niche = st.selectbox("Niche", combo_niche_options, key="bulk_combo_niche")
+            
+            if combo_niche == "✨ Custom":
+                combo_niche = st.text_input("Enter Custom Niche", key="bulk_custom_niche", placeholder="e.g., meditation, skateboarding")
+                if not combo_niche.strip():
+                    combo_niche = "lifestyle"
+            
+            # Text overlay for this combination
+            combo_text = st.text_input("Text Overlay (Optional)", key="bulk_combo_text", placeholder="Leave empty or add text")
+            
+            # Add combination button
+            if st.button("➕ Add to Batch", key="add_bulk_combo", use_container_width=True):
+                st.session_state.bulk_combinations.append({
+                    'style': combo_style,
+                    'niche': combo_niche,
+                    'text': combo_text
+                })
+                st.success(f"✅ Added: {combo_style} + {combo_niche}")
+                st.rerun()
+            
+            # Display added combinations
+            if st.session_state.bulk_combinations:
+                st.divider()
+                st.write(f"**📋 Batch Queue ({len(st.session_state.bulk_combinations)} designs):**")
+                
+                for idx, combo in enumerate(st.session_state.bulk_combinations):
+                    combo_col_a, combo_col_b = st.columns([5, 1])
+                    with combo_col_a:
+                        text_display = f" + '{combo['text']}'" if combo['text'] else ""
+                        st.text(f"{idx+1}. {combo['style']} × {combo['niche']}{text_display}")
+                    with combo_col_b:
+                        if st.button("🗑️", key=f"del_bulk_combo_{idx}"):
+                            st.session_state.bulk_combinations.pop(idx)
+                            st.rerun()
+                
+                if st.button("🔄 Clear All", key="clear_bulk_combos", use_container_width=True):
+                    st.session_state.bulk_combinations = []
+                    st.rerun()
+        
+        with bulk_col2:
+            st.subheader("Batch Settings")
+            
+            # Provider selection
+            bulk_provider_options = []
+            if has_openai:
+                bulk_provider_options.append("openai")
+            if has_replicate:
+                bulk_provider_options.append("replicate")
+            
+            if not bulk_provider_options:
+                st.error("⚠️ Please configure at least one API key in Secrets")
+                bulk_provider = None
+            else:
+                bulk_provider = st.radio("AI Provider", bulk_provider_options, key="bulk_provider")
+            
+            # Model selection for Replicate
+            if bulk_provider == "replicate":
+                bulk_replicate_model = st.selectbox(
+                    "Replicate Model",
+                    ["sdxl", "flux-dev", "flux-schnell"],
+                    key="bulk_replicate_model"
+                )
+            else:
+                bulk_replicate_model = "sdxl"
+            
+            bulk_upscale = st.checkbox("Upscale All Images (2x)", value=False, key="bulk_upscale")
+            
+            # Rate limiting setting
+            rate_limit_delay = st.slider(
+                "Delay Between Generations (seconds)",
+                min_value=10,
+                max_value=60,
+                value=12,
+                step=2,
+                help="Wait time between each generation to respect API rate limits. Keep at 10-15 seconds for basic plans."
+            )
+            
+            # Cost and time estimates
+            if st.session_state.bulk_combinations:
+                batch_count = len(st.session_state.bulk_combinations)
+                
+                if bulk_provider == "openai":
+                    batch_cost = batch_count * 0.09
+                    time_per_image = 45
+                else:
+                    batch_cost = batch_count * 0.003
+                    time_per_image = 30
+                
+                total_time = (batch_count * time_per_image) + ((batch_count - 1) * rate_limit_delay)
+                minutes = int(total_time // 60)
+                seconds = int(total_time % 60)
+                
+                st.info(f"💰 **Estimated Cost:** ${batch_cost:.3f}")
+                st.info(f"⏱️ **Estimated Time:** {minutes}m {seconds}s")
+                st.caption(f"Includes {rate_limit_delay}s delay between generations")
+        
+        # Generate Batch Button
+        st.divider()
+        
+        if st.session_state.bulk_combinations:
+            if st.button("🚀 Generate Batch", type="primary", use_container_width=True, 
+                        key="generate_bulk_btn", disabled=(bulk_provider is None)):
+                
+                combinations = st.session_state.bulk_combinations
+                total = len(combinations)
+                
+                # Progress tracking
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                results = []
+                
+                for idx, combo in enumerate(combinations):
+                    status_text.text(f"🎨 Generating {idx+1}/{total}: {combo['style']} × {combo['niche']}...")
+                    progress_bar.progress((idx) / total)
+                    
+                    try:
+                        start_time = time.time()
+                        
+                        # Generate prompt
+                        prompt = AIService.generate_prompt(combo['style'], combo['niche'], bulk_provider)
+                        
+                        # Generate image
+                        if bulk_provider == "openai":
+                            image_url = AIService.generate_image_openai(prompt)
+                            cost = 0.09
+                        else:
+                            image_url = AIService.generate_image_replicate(prompt, bulk_replicate_model)
+                            cost = 0.003
+                        
+                        # Process image
+                        design_id = f"bulk_{idx+1}_{int(time.time())}"
+                        output_path = ImageProcessor.process_design(
+                            image_url,
+                            design_id,
+                            combo['text'] if combo['text'] else None,
+                            bulk_upscale
+                        )
+                        
+                        processing_time = time.time() - start_time
+                        
+                        results.append({
+                            'id': design_id,
+                            'style': combo['style'],
+                            'niche': combo['niche'],
+                            'text': combo['text'],
+                            'path': output_path,
+                            'cost': cost,
+                            'prompt': prompt,
+                            'time': processing_time
+                        })
+                        
+                        status_text.text(f"✅ Generated {idx+1}/{total} in {processing_time:.1f}s")
+                        
+                        # Rate limiting delay (skip after last generation)
+                        if idx < total - 1:
+                            for countdown in range(rate_limit_delay, 0, -1):
+                                status_text.text(f"⏳ Rate limit cooldown: {countdown}s until next generation...")
+                                time.sleep(1)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error on {combo['style']} × {combo['niche']}: {str(e)}")
+                        results.append({
+                            'id': f"error_{idx}",
+                            'style': combo['style'],
+                            'niche': combo['niche'],
+                            'error': str(e)
+                        })
+                    
+                    progress_bar.progress((idx + 1) / total)
+                
+                status_text.text("🎉 Batch generation complete!")
+                progress_bar.progress(1.0)
+                
+                # Display results summary
+                st.success(f"✅ Successfully generated {len([r for r in results if 'path' in r])} out of {total} designs!")
+                
+                total_cost = sum(r.get('cost', 0) for r in results)
+                total_time = sum(r.get('time', 0) for r in results)
+                st.info(f"💰 Total Cost: ${total_cost:.3f} | ⏱️ Total Time: {int(total_time//60)}m {int(total_time%60)}s")
+                
+                # Display results in grid
+                st.divider()
+                st.subheader("📸 Generated Designs")
+                
+                cols = st.columns(3)
+                
+                for idx, result in enumerate(results):
+                    if 'path' in result:
+                        with cols[idx % 3]:
+                            st.image(result['path'], use_container_width=True)
+                            st.caption(f"**{result['style']}** × **{result['niche']}**")
+                            if result['text']:
+                                st.caption(f"Text: '{result['text']}'")
+                            
+                            # Download button for each image
+                            with open(result['path'], "rb") as f:
+                                img_data = f.read()
+                            
+                            st.download_button(
+                                "⬇️ Download",
+                                data=img_data,
+                                file_name=f"{result['id']}.png",
+                                mime="image/png",
+                                key=f"bulk_dl_{result['id']}",
+                                use_container_width=True
+                            )
+                            
+                            st.caption(f"${result['cost']:.3f} • {result['time']:.1f}s")
+                    else:
+                        with cols[idx % 3]:
+                            st.error(f"Failed: {result['style']} × {result['niche']}")
+                            st.caption(f"Error: {result.get('error', 'Unknown')}")
+                
+                # Download all as ZIP
+                st.divider()
+                st.subheader("📦 Download All Results")
+                
+                successful_results = [r for r in results if 'path' in r]
+                
+                if successful_results and st.button("📦 Create ZIP of All Images", key="create_bulk_zip"):
+                    import zipfile
+                    
+                    zip_buffer = io.BytesIO()
+                    
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        # Add all images
+                        for result in successful_results:
+                            with open(result['path'], 'rb') as f:
+                                zip_file.writestr(f"{result['id']}.png", f.read())
+                        
+                        # Add metadata file
+                        metadata = "BATCH GENERATION METADATA\n"
+                        metadata += "=" * 50 + "\n\n"
+                        metadata += f"Total Designs: {len(successful_results)}\n"
+                        metadata += f"Total Cost: ${total_cost:.3f}\n"
+                        metadata += f"Total Time: {int(total_time//60)}m {int(total_time%60)}s\n"
+                        metadata += f"Provider: {bulk_provider}\n"
+                        metadata += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        metadata += "\n" + "=" * 50 + "\n\n"
+                        
+                        for idx, r in enumerate(successful_results):
+                            metadata += f"Design {idx+1}:\n"
+                            metadata += f"  ID: {r['id']}\n"
+                            metadata += f"  Style: {r['style']}\n"
+                            metadata += f"  Niche: {r['niche']}\n"
+                            if r['text']:
+                                metadata += f"  Text: {r['text']}\n"
+                            metadata += f"  Cost: ${r['cost']:.3f}\n"
+                            metadata += f"  Time: {r['time']:.1f}s\n"
+                            metadata += f"  Prompt: {r['prompt']}\n"
+                            metadata += "\n"
+                        
+                        zip_file.writestr("batch_metadata.txt", metadata)
+                    
+                    zip_buffer.seek(0)
+                    
+                    st.download_button(
+                        "⬇️ Download ZIP File",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"bulk_designs_{int(time.time())}.zip",
+                        mime="application/zip",
+                        key="download_bulk_zip",
+                        use_container_width=True
+                    )
+                    
+                    st.success("✅ ZIP file ready for download!")
+                
+                # Clear combinations after successful batch
+                st.divider()
+                if st.button("🔄 Start New Batch", key="reset_bulk_batch"):
+                    st.session_state.bulk_combinations = []
+                    st.rerun()
+        else:
+            st.info("👆 Add at least one style/niche combination to start generating!")
 
 # Tab 2: Image Editing
 with tab2:
