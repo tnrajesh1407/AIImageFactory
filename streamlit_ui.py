@@ -667,7 +667,7 @@ with tab1:
         if ai_provider == "replicate":
             replicate_model = st.selectbox(
                 "Replicate Model",
-                ["sdxl", "flux-dev", "flux-schnell"]
+                ["prunaai/p-image", "flux-dev", "flux-schnell"]
             )
         else:
             replicate_model = "sdxl"
