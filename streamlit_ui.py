@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 import time
 from datetime import datetime
 import json
@@ -22,11 +22,11 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 # Optional: python-dotenv for local development
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # Not needed on Streamlit Cloud
+#try:
+    #from dotenv import load_dotenv
+    #load_dotenv()
+#except ImportError:
+    #pass  # Not needed on Streamlit Cloud
 
 # Import tempfile for Streamlit Cloud compatibility
 import tempfile
