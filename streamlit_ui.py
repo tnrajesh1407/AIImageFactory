@@ -23,7 +23,7 @@ except ImportError:
 
 # Optional: python-dotenv for local development
 #try:
-    #from dotenv import load_dotenv
+    #rom dotenv import load_dotenv
     #load_dotenv()
 #except ImportError:
     #pass  # Not needed on Streamlit Cloud
@@ -724,7 +724,7 @@ with tab1:
         st.warning(error_message)
     
     if st.button("🚀 Generate Design", type="primary", use_container_width=True, 
-                 disabled=(ai_provider is None or not can_generate)):
+                 disabled=(ai_provider is None or not can_generate), key="generate_design_main_btn"):
         
         design_id = f"design_{int(time.time())}"
         
@@ -810,14 +810,16 @@ with tab1:
                     st.image(output_path, use_container_width=True)
                     
                     with open(output_path, "rb") as f:
-                        st.download_button(
-                            "⬇️ Download Design",
-                            data=f.read(),
-                            file_name=f"{design_id}.png",
-                            mime="image/png",
-                            use_container_width=True,
-                            key=f"download_design_{design_id}"
-                        )
+                        image_data = f.read()
+                    
+                    st.download_button(
+                        "⬇️ Download Design",
+                        data=image_data,
+                        file_name=f"{design_id}.png",
+                        mime="image/png",
+                        use_container_width=True,
+                        key=f"download_design_{design_id}"
+                    )
                 
                 with col2:
                     st.subheader("Details")
@@ -1028,7 +1030,7 @@ with tab2:
         
         if uploaded_file:
             # Process button
-            if st.button("🚀 Process Image", type="primary", use_container_width=True):
+            if st.button("🚀 Process Image", type="primary", use_container_width=True, key="process_image_btn"):
                 
                 with st.spinner(f"Processing with AI... This may take 30-60 seconds..."):
                     try:
@@ -1069,13 +1071,16 @@ with tab2:
                             
                             # Download button
                             with open(result_path, "rb") as f:
-                                st.download_button(
-                                    "⬇️ Download Result",
-                                    data=f.read(),
-                                    file_name="background_removed.png",
-                                    mime="image/png",
-                                    use_container_width=True
-                                )
+                                bg_removed_data = f.read()
+                            
+                            st.download_button(
+                                "⬇️ Download Result",
+                                data=bg_removed_data,
+                                file_name="background_removed.png",
+                                mime="image/png",
+                                use_container_width=True,
+                                key=f"download_bg_{int(time.time())}"
+                            )
                             
                             st.info(f"💰 Estimated cost: $0.005")
                             
@@ -1148,9 +1153,11 @@ with tab2:
                                 
                                 # Download button
                                 with open(result_path, "rb") as f:
+                                    file_data_1154 = f.read()
+                                    
                                     st.download_button(
                                         "⬇️ Download Result",
-                                        data=f.read(),
+                                        data=file_data_1154,
                                         file_name="edited_image.png",
                                         mime="image/png",
                                         use_container_width=True
@@ -1383,9 +1390,11 @@ with tab4:
                         st.image(result_path, use_container_width=True)
                         
                         with open(result_path, "rb") as f:
+                            file_data_1391 = f.read()
+                            
                             st.download_button(
                                 "⬇️ Download",
-                                data=f.read(),
+                                data=file_data_1391,
                                 file_name="anime_image.png",
                                 mime="image/png",
                                 use_container_width=True,
@@ -1530,9 +1539,11 @@ with tab5:
                     st.image(result_path, width=200)
                     
                     with open(result_path, "rb") as f:
+                        file_data_1540 = f.read()
+                        
                         st.download_button(
                             "⬇️ Download",
-                            data=f.read(),
+                            data=file_data_1540,
                             file_name="custom_emoji.png",
                             mime="image/png",
                             use_container_width=True
@@ -1641,9 +1652,11 @@ with tab6:
                         st.image(result_path, caption="Transformed Result", use_container_width=True)
                         
                         with open(result_path, "rb") as f:
+                            file_data_1653 = f.read()
+                            
                             st.download_button(
                                 "⬇️ Download",
-                                data=f.read(),
+                                data=file_data_1653,
                                 file_name="transformed_sketch.png",
                                 mime="image/png",
                                 use_container_width=True
@@ -1803,9 +1816,11 @@ with tab7:
                         st.image(result_path, caption="Restored Image", use_container_width=True)
                         
                         with open(result_path, "rb") as f:
+                            file_data_1817 = f.read()
+                            
                             st.download_button(
                                 "⬇️ Download",
-                                data=f.read(),
+                                data=file_data_1817,
                                 file_name="restored_image.png",
                                 mime="image/png",
                                 use_container_width=True,
@@ -1869,9 +1884,11 @@ with tab8:
                     
                     # Download button
                     with open(img_path, "rb") as f:
+                        file_data_1885 = f.read()
+                        
                         st.download_button(
                             "⬇️ Download",
-                            data=f.read(),
+                            data=file_data_1885,
                             file_name=filename,
                             mime="image/png",
                             key=f"download_{idx}_{filename}",
