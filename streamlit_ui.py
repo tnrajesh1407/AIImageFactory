@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+from dotenv import load_dotenv
 import time
 from datetime import datetime
 import json
@@ -19,6 +20,13 @@ try:
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
+
+# Optional: python-dotenv for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Not needed on Streamlit Cloud
 
 # Import tempfile for Streamlit Cloud compatibility
 import tempfile
@@ -659,7 +667,7 @@ with tab1:
         if ai_provider == "replicate":
             replicate_model = st.selectbox(
                 "Replicate Model",
-                ["sdxl", "prunaai/p-image", "flux-schnell"]
+                ["sdxl", "flux-dev", "flux-schnell"]
             )
         else:
             replicate_model = "sdxl"
@@ -807,7 +815,8 @@ with tab1:
                             data=f.read(),
                             file_name=f"{design_id}.png",
                             mime="image/png",
-                            use_container_width=True
+                            use_container_width=True,
+                            key=f"download_design_{design_id}"
                         )
                 
                 with col2:
@@ -862,7 +871,8 @@ with tab1:
                         data=seo_json,
                         file_name=f"{design_id}_seo.json",
                         mime="application/json",
-                        use_container_width=True
+                        use_container_width=True,
+                        key=f"download_seo_json_{design_id}"
                     )
                     
                     # Download SEO as Text
@@ -888,7 +898,8 @@ Search Terms:
                         data=seo_text,
                         file_name=f"{design_id}_seo.txt",
                         mime="text/plain",
-                        use_container_width=True
+                        use_container_width=True,
+                        key=f"download_seo_txt_{design_id}"
                     )
                 
             except Exception as e:
@@ -1377,7 +1388,8 @@ with tab4:
                                 data=f.read(),
                                 file_name="anime_image.png",
                                 mime="image/png",
-                                use_container_width=True
+                                use_container_width=True,
+                                key=f"download_anime_{int(time.time())}"
                             )
                         
                         st.info("💰 Cost: ~$0.01")
@@ -1796,7 +1808,8 @@ with tab7:
                                 data=f.read(),
                                 file_name="restored_image.png",
                                 mime="image/png",
-                                use_container_width=True
+                                use_container_width=True,
+                                key=f"download_restore_{int(time.time())}"
                             )
                         
                         st.info("💰 Cost: ~$0.01")
