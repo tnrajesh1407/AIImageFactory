@@ -367,7 +367,7 @@ Make it visually appealing, commercially viable, and on-trend."""
             "sdxl": "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             "flux-dev": "black-forest-labs/flux-dev",
             "flux-schnell": "black-forest-labs/flux-schnell",
-            "prunaai/p-image": "prunaai/p-image:8ead22db4c2b79f9e3a39b7d25bf2c6b02e79e0e3f86c3d2c7936f3d4be93d6c",
+            "prunaai/p-image": "prunaai/p-image",
         }
         
         model_version = models.get(model, models["sdxl"])
