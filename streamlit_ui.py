@@ -23,7 +23,7 @@ except ImportError:
 
 # Optional: python-dotenv for local development
 #try:
-    #rom dotenv import load_dotenv
+    #from dotenv import load_dotenv
     #load_dotenv()
 #except ImportError:
     #pass  # Not needed on Streamlit Cloud
@@ -99,6 +99,18 @@ def retry_with_backoff(max_retries=3, initial_delay=10):
                         raise
         return wrapper
     return decorator
+
+# Helper function to validate and set Replicate API token
+def setup_replicate_token():
+    """Validate and set Replicate API token. Returns True if successful, False otherwise."""
+    replicate_token = get_api_key("REPLICATE_API_TOKEN")
+    if not replicate_token:
+        st.error("❌ Replicate API token not configured.")
+        st.info("💡 **How to fix:** Go to App Settings → Secrets and add:\n```\nREPLICATE_API_TOKEN = \"r8_your-token-here\"\n```")
+        st.caption("Get your token from: https://replicate.com/account/api-tokens")
+        return False
+    os.environ["REPLICATE_API_TOKEN"] = replicate_token
+    return True
 
 # Setup directories for Streamlit Cloud (uses temp directory)
 temp_dir = tempfile.gettempdir()
@@ -218,11 +230,12 @@ Make it visually appealing, commercially viable, and on-trend."""
     @staticmethod
     def generate_image_replicate(prompt: str, model: str = "sdxl") -> str:
         """Generate image using Replicate"""
-        os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+        if not setup_replicate_token():
+            st.stop()
         
         models = {
             "sdxl": "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-            "flux-dev": "bprunaai/p-image",
+            "flux-dev": "black-forest-labs/flux-dev",
             "flux-schnell": "black-forest-labs/flux-schnell",
         }
         
@@ -245,10 +258,36 @@ Make it visually appealing, commercially viable, and on-trend."""
 # SEO Metadata Generator
 class SEOGenerator:
     @staticmethod
-    def encode_image_base64(image_path: str) -> str:
-        """Encode image to base64 for Anthropic API"""
+    def encode_image_base64(image_path: str) -> tuple:
+        """Encode image to base64 for Anthropic API and detect media type"""
+        from PIL import Image as PILImage
+        
+        # Read the image file
         with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
+            image_bytes = image_file.read()
+        
+        # Detect the actual image format using PIL
+        try:
+            img = PILImage.open(image_path)
+            image_format = img.format.lower() if img.format else 'png'
+        except:
+            image_format = 'png'  # Default fallback
+        
+        # Map image format to media type
+        media_type_map = {
+            'png': 'image/png',
+            'jpeg': 'image/jpeg',
+            'jpg': 'image/jpeg',
+            'webp': 'image/webp',
+            'gif': 'image/gif'
+        }
+        
+        media_type = media_type_map.get(image_format, 'image/png')
+        
+        # Encode to base64
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+        
+        return base64_data, media_type
     
     @staticmethod
     def generate_seo_with_anthropic(image_path: str, style: str, niche: str, text_overlay: str = None) -> dict:
@@ -264,14 +303,14 @@ class SEOGenerator:
         try:
             client = anthropic.Anthropic(api_key=anthropic_key)
             
-            # Encode image
-            image_data = SEOGenerator.encode_image_base64(image_path)
+            # Encode image and detect format
+            image_data, media_type = SEOGenerator.encode_image_base64(image_path)
             
-            # Try multiple model versions in order of preference
+            # Try multiple model versions in order of preference (Claude 3.5 Sonnet for Vision)
             models_to_try = [
-                "claude-3-sonnet-20240229",  # Claude 3 Sonnet with vision
-                "claude-3-opus-20240229",    # Claude 3 Opus (if Sonnet unavailable)
-                "claude-3-haiku-20240307"    # Claude 3 Haiku (fallback)
+                "claude-opus-4-6",  # Claude 3.5 Sonnet (Latest with Vision - BEST)
+                "claude-sonnet-4-5-20250929",   # Claude 3.5 Haiku (Fast with Vision)
+                "claude-haiku-4-5"      # Claude 3 Haiku (Legacy fallback)
             ]
             
             response = None
@@ -340,7 +379,7 @@ Base your analysis on what you actually SEE in the image, not just the context p
                                         "type": "image",
                                         "source": {
                                             "type": "base64",
-                                            "media_type": "image/png",
+                                            "media_type": media_type,  # Use detected media type
                                             "data": image_data
                                         }
                                     },
@@ -917,11 +956,11 @@ Search Terms:
                         with open(output_path, 'rb') as f:
                             zip_file.writestr(f"{design_id}.png", f.read())
                         
-                        # Add SEO JSON
-                        zip_file.writestr(f"{design_id}_seo.json", seo_json)
+                        # Add SEO JSON (ensure it's properly encoded)
+                        zip_file.writestr(f"{design_id}_seo.json", seo_json.encode('utf-8'))
                         
-                        # Add SEO TXT
-                        zip_file.writestr(f"{design_id}_seo.txt", seo_text)
+                        # Add SEO TXT (ensure it's properly encoded)
+                        zip_file.writestr(f"{design_id}_seo.txt", seo_text.encode('utf-8'))
                         
                         # Add README with design info
                         readme = f"""DESIGN PACKAGE - {design_id}
@@ -1435,7 +1474,8 @@ with tab2:
                             st.info(f"🔧 Removing background...")
                             
                             # Process with Replicate
-                            os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                            if not setup_replicate_token():
+                                st.stop()
                             
                             # Convert image to data URI
                             image_uri = image_to_data_uri(upload_path)
@@ -1486,7 +1526,8 @@ with tab2:
                                 st.info(f"✨ Editing image with: '{custom_prompt}'")
                                 
                                 # Process with Replicate
-                                os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                                if not setup_replicate_token():
+                                    st.stop()
                                 
                                 # Open file - Replicate SDK will handle the upload
                                 with open(upload_path, "rb") as image_file:
@@ -1650,7 +1691,8 @@ with tab3:
             if st.button("🚀 Generate Caption", type="primary", use_container_width=True, key="caption_btn"):
                 with st.spinner("Analyzing image..."):
                     try:
-                        os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                        if not setup_replicate_token():
+                            st.stop()
                         
                         if caption_mode == "Visual Q&A" and user_question:
                             prompt = user_question
@@ -1764,7 +1806,8 @@ with tab4:
             else:
                 with st.spinner("Creating anime artwork..."):
                     try:
-                        os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                        if not setup_replicate_token():
+                            st.stop()
                         
                         output = replicate.run(
                             anime_model,
@@ -1782,19 +1825,225 @@ with tab4:
                             f.write(result_data)
                         
                         st.success("✅ Anime image created!")
-                        st.image(result_path, use_container_width=True)
                         
-                        with open(result_path, "rb") as f:
-                            file_data_1391 = f.read()
+                        # Generate SEO metadata for anime with comprehensive error handling
+                        try:
+                            st.info("🏷️ Generating SEO metadata...")
                             
+                            # Tier 1: Try Anthropic Claude Vision (Best - analyzes actual image)
+                            if get_api_key("ANTHROPIC_API_KEY") and ANTHROPIC_AVAILABLE:
+                                try:
+                                    st.caption("Using Anthropic Claude Vision for SEO analysis...")
+                                    anime_seo_data = SEOGenerator.generate_seo_with_anthropic(
+                                        result_path, "anime", "art", None
+                                    )
+                                except Exception as vision_error:
+                                    st.warning(f"⚠️ Claude Vision unavailable. Trying OpenAI...")
+                                    st.caption(f"Vision error: {str(vision_error)[:80]}")
+                                    
+                                    # Tier 2: Try OpenAI GPT-4 (Very Good - uses prompt context)
+                                    if get_api_key("OPENAI_API_KEY"):
+                                        try:
+                                            st.caption("Using OpenAI GPT-4 for SEO generation...")
+                                            anime_seo_data = SEOGenerator.generate_seo_with_openai(
+                                                "anime", "art", anime_prompt, None
+                                            )
+                                        except Exception as openai_error:
+                                            st.caption(f"OpenAI error: {str(openai_error)[:80]}")
+                                            st.caption("Using template-based SEO...")
+                                            anime_seo_data = SEOGenerator.generate_seo_fallback("anime", "art", anime_prompt)
+                                    else:
+                                        # Tier 3: Template-based
+                                        st.caption("Using template-based SEO...")
+                                        anime_seo_data = SEOGenerator.generate_seo_fallback("anime", "art", anime_prompt)
+                            
+                            # No Anthropic key - try OpenAI first
+                            elif get_api_key("OPENAI_API_KEY"):
+                                try:
+                                    st.caption("Using OpenAI GPT-4 for SEO generation...")
+                                    anime_seo_data = SEOGenerator.generate_seo_with_openai(
+                                        "anime", "art", anime_prompt, None
+                                    )
+                                except Exception as openai_error:
+                                    st.caption(f"OpenAI error: {str(openai_error)[:80]}")
+                                    st.caption("Using template-based SEO...")
+                                    anime_seo_data = SEOGenerator.generate_seo_fallback("anime", "art", anime_prompt)
+                            
+                            # No API keys at all - use template
+                            else:
+                                st.caption("Using template-based SEO (no API keys configured)...")
+                                anime_seo_data = SEOGenerator.generate_seo_fallback("anime", "art", anime_prompt)
+                                
+                        except Exception as seo_error:
+                            st.warning(f"⚠️ SEO generation failed. Creating basic metadata.")
+                            # Tier 4: Basic fallback (always works)
+                            anime_seo_data = {
+                                "title": f"Anime Art - {anime_prompt[:50] if anime_prompt else 'Custom Design'}",
+                                "description": f"Anime-style digital artwork. {anime_prompt[:150] if anime_prompt else 'Custom anime illustration with professional quality.'}",
+                                "alt_text": "Anime-style digital illustration",
+                                "tags": ["anime", "anime art", "digital art", "manga", "otaku", "japanese art", "anime poster", "kawaii"],
+                                "keywords": ["anime art print", "digital anime illustration", "manga artwork", "otaku gift"],
+                                "search_terms": "anime art, manga, digital illustration, japanese art, otaku"
+                            }
+                        
+                        # Display results in 2 columns
+                        col1, col2 = st.columns([1, 1])
+                        
+                        with col1:
+                            st.subheader("Generated Anime")
+                            st.image(result_path, use_container_width=True)
+                            
+                            with open(result_path, "rb") as f:
+                                file_data_1391 = f.read()
+                                
                             st.download_button(
-                                "⬇️ Download",
+                                "⬇️ Download Image",
                                 data=file_data_1391,
                                 file_name="anime_image.png",
                                 mime="image/png",
                                 use_container_width=True,
                                 key=f"download_anime_{int(time.time())}"
                             )
+                        
+                        with col2:
+                            st.subheader("Details & SEO")
+                            st.write(f"**Prompt:** {anime_prompt[:100]}...")
+                            st.write(f"**Model:** {anime_model}")
+                            
+                            st.divider()
+                            
+                            # SEO Metadata Section
+                            st.subheader("📊 SEO Metadata")
+                            
+                            # Title
+                            st.write("**Title:**")
+                            st.code(anime_seo_data.get("title", ""), language=None)
+                            
+                            # Description  
+                            st.write("**Description:**")
+                            st.text_area("Description", anime_seo_data.get("description", ""), height=100, key="anime_desc_display", disabled=True, label_visibility="collapsed")
+                            
+                            # Alt Text
+                            st.write("**Alt Text:**")
+                            st.code(anime_seo_data.get("alt_text", ""), language=None)
+                            
+                            # Tags
+                            st.write("**Tags:**")
+                            anime_tags = anime_seo_data.get("tags", [])
+                            if anime_tags:
+                                st.code(", ".join(anime_tags[:10]), language=None)
+                                if len(anime_tags) > 10:
+                                    with st.expander("Show all tags"):
+                                        st.code(", ".join(anime_tags), language=None)
+                            
+                            # Keywords
+                            st.write("**Keywords:**")
+                            anime_keywords = anime_seo_data.get("keywords", [])
+                            if anime_keywords:
+                                st.code(", ".join(anime_keywords), language=None)
+                            
+                            # Download SEO as JSON
+                            anime_seo_json = json.dumps(anime_seo_data, indent=2)
+                            st.download_button(
+                                "📥 Download SEO Data (JSON)",
+                                data=anime_seo_json,
+                                file_name=f"anime_{int(time.time())}_seo.json",
+                                mime="application/json",
+                                use_container_width=True,
+                                key=f"download_anime_seo_json_{int(time.time())}"
+                            )
+                            
+                            # Download SEO as Text
+                            anime_seo_text = f"""Title: {anime_seo_data.get('title', '')}
+
+Description:
+{anime_seo_data.get('description', '')}
+
+Alt Text:
+{anime_seo_data.get('alt_text', '')}
+
+Tags:
+{', '.join(anime_seo_data.get('tags', []))}
+
+Keywords:
+{', '.join(anime_seo_data.get('keywords', []))}
+
+Search Terms:
+{anime_seo_data.get('search_terms', '')}
+"""
+                            st.download_button(
+                                "📄 Download SEO Data (TXT)",
+                                data=anime_seo_text,
+                                file_name=f"anime_{int(time.time())}_seo.txt",
+                                mime="text/plain",
+                                use_container_width=True,
+                                key=f"download_anime_seo_txt_{int(time.time())}"
+                            )
+                        
+                        # Create ZIP package with image + SEO + README
+                        st.divider()
+                        st.subheader("📦 Download Complete Package")
+                        
+                        import zipfile
+                        
+                        anime_id = f"anime_{int(time.time())}"
+                        zip_buffer = io.BytesIO()
+                        
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            # Add the anime image
+                            zip_file.writestr(f"{anime_id}.png", file_data_1391)
+                            
+                            # Add SEO JSON
+                            zip_file.writestr(f"{anime_id}_seo.json", anime_seo_json.encode('utf-8'))
+                            
+                            # Add SEO TXT
+                            zip_file.writestr(f"{anime_id}_seo.txt", anime_seo_text.encode('utf-8'))
+                            
+                            # Add README with complete details
+                            readme = f"""ANIME IMAGE PACKAGE - {anime_id}
+{'=' * 60}
+
+GENERATION DETAILS:
+------------------
+Prompt: {anime_prompt}
+Negative Prompt: {anime_negative if anime_negative else 'low quality, blurry'}
+Model: {anime_model}
+Cost: ~$0.01
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+FILES INCLUDED:
+--------------
+1. {anime_id}.png - The generated anime-style image
+2. {anime_id}_seo.json - SEO metadata in JSON format
+3. {anime_id}_seo.txt - SEO metadata in text format
+4. README.txt - This file
+
+SEO METADATA SUMMARY:
+--------------------
+Title: {anime_seo_data.get('title', '')}
+Description: {anime_seo_data.get('description', '')}
+Alt Text: {anime_seo_data.get('alt_text', '')}
+Tags: {', '.join(anime_seo_data.get('tags', [])[:10])}
+Keywords: {', '.join(anime_seo_data.get('keywords', [])[:10])}
+
+{'=' * 60}
+Generated by AI Image Factory - Anime Tab
+"""
+                            zip_file.writestr("README.txt", readme.encode('utf-8'))
+                        
+                        zip_buffer.seek(0)
+                        zip_data = zip_buffer.getvalue()
+                        
+                        st.download_button(
+                            "📦 Download Complete Package (ZIP)",
+                            data=zip_data,
+                            file_name=f"{anime_id}_complete.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                            key=f"download_anime_zip_{int(time.time())}"
+                        )
+                        
+                        st.caption("📦 Includes: Image + SEO JSON + SEO TXT + README")
                         
                         st.info("💰 Cost: ~$0.01")
                         
@@ -1876,7 +2125,9 @@ with tab5:
         if st.button("🚀 Generate Emoji", type="primary", use_container_width=True, disabled=not should_generate, key="emoji_btn"):
             with st.spinner("Creating emoji..."):
                 try:
-                    os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                    # Validate and set Replicate API token
+                    if not setup_replicate_token():
+                        st.stop()
                     
                     if emoji_mode == "Image to Emoji" and emoji_file:
                         upload_path = str(UPLOADS_DIR / f"emoji_{int(time.time())}.png")
@@ -1931,18 +2182,231 @@ with tab5:
                         f.write(result_data)
                     
                     st.success("✅ Emoji created!")
-                    st.image(result_path, width=200)
                     
-                    with open(result_path, "rb") as f:
-                        file_data_1540 = f.read()
+                    # Generate SEO metadata for emoji with comprehensive error handling
+                    try:
+                        st.info("🏷️ Generating SEO metadata...")
+                        
+                        # Tier 1: Try Anthropic Claude Vision (Best - analyzes actual image)
+                        if get_api_key("ANTHROPIC_API_KEY") and ANTHROPIC_AVAILABLE:
+                            try:
+                                st.caption("Using Anthropic Claude Vision for SEO analysis...")
+                                emoji_seo_data = SEOGenerator.generate_seo_with_anthropic(
+                                    result_path, "emoji", "icon", None
+                                )
+                            except Exception as vision_error:
+                                st.warning(f"⚠️ Claude Vision unavailable. Trying OpenAI...")
+                                st.caption(f"Vision error: {str(vision_error)[:80]}")
+                                
+                                # Tier 2: Try OpenAI GPT-4 (Very Good - uses prompt context)
+                                if get_api_key("OPENAI_API_KEY"):
+                                    try:
+                                        st.caption("Using OpenAI GPT-4 for SEO generation...")
+                                        emoji_seo_data = SEOGenerator.generate_seo_with_openai(
+                                            "emoji", "icon", emoji_prompt, None
+                                        )
+                                    except Exception as openai_error:
+                                        st.caption(f"OpenAI error: {str(openai_error)[:80]}")
+                                        st.caption("Using template-based SEO...")
+                                        emoji_seo_data = SEOGenerator.generate_seo_fallback("emoji", "icon", emoji_prompt)
+                                else:
+                                    # Tier 3: Template-based
+                                    st.caption("Using template-based SEO...")
+                                    emoji_seo_data = SEOGenerator.generate_seo_fallback("emoji", "icon", emoji_prompt)
+                        
+                        # No Anthropic key - try OpenAI first
+                        elif get_api_key("OPENAI_API_KEY"):
+                            try:
+                                st.caption("Using OpenAI GPT-4 for SEO generation...")
+                                emoji_seo_data = SEOGenerator.generate_seo_with_openai(
+                                    "emoji", "icon", emoji_prompt, None
+                                )
+                            except Exception as openai_error:
+                                st.caption(f"OpenAI error: {str(openai_error)[:80]}")
+                                st.caption("Using template-based SEO...")
+                                emoji_seo_data = SEOGenerator.generate_seo_fallback("emoji", "icon", emoji_prompt)
+                        
+                        # No API keys at all - use template
+                        else:
+                            st.caption("Using template-based SEO (no API keys configured)...")
+                            emoji_seo_data = SEOGenerator.generate_seo_fallback("emoji", "icon", emoji_prompt)
+                            
+                    except Exception as seo_error:
+                        st.warning(f"⚠️ SEO generation failed. Creating basic metadata.")
+                        # Tier 4: Basic fallback (always works)
+                        emoji_seo_data = {
+                            "title": f"Custom Emoji - {emoji_prompt[:50] if emoji_prompt else 'Unique Design'}",
+                            "description": f"Custom emoji design. {emoji_prompt[:150] if emoji_prompt else 'High-quality custom emoji perfect for Discord, Slack, and messaging apps.'}",
+                            "alt_text": "Custom emoji design",
+                            "tags": ["emoji", "custom emoji", "sticker", "icon", "discord emoji", "slack emoji", "chat", "messaging"],
+                            "keywords": ["custom emoji", "chat icon", "messaging sticker", "discord sticker"],
+                            "search_terms": "custom emoji, sticker, chat icon, discord emoji"
+                        }
+                    
+                    # Display results in 2 columns
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        st.subheader("Generated Emoji")
+                        st.image(result_path, width=300)
+                        
+                        with open(result_path, "rb") as f:
+                            file_data_1540 = f.read()
                         
                         st.download_button(
-                            "⬇️ Download",
+                            "⬇️ Download Image",
                             data=file_data_1540,
                             file_name="custom_emoji.png",
                             mime="image/png",
-                            use_container_width=True
+                            use_container_width=True,
+                            key=f"download_emoji_{int(time.time())}"
                         )
+                    
+                    with col2:
+                        st.subheader("Details & SEO")
+                        st.write(f"**Prompt:** {emoji_prompt}")
+                        
+                        st.divider()
+                        
+                        # SEO Metadata Section
+                        st.subheader("📊 SEO Metadata")
+                        
+                        # Title
+                        st.write("**Title:**")
+                        st.code(emoji_seo_data.get("title", ""), language=None)
+                        
+                        # Description
+                        st.write("**Description:**")
+                        st.text_area("Description", emoji_seo_data.get("description", ""), height=100, key="emoji_desc_display", disabled=True, label_visibility="collapsed")
+                        
+                        # Alt Text
+                        st.write("**Alt Text:**")
+                        st.code(emoji_seo_data.get("alt_text", ""), language=None)
+                        
+                        # Tags
+                        st.write("**Tags:**")
+                        emoji_tags = emoji_seo_data.get("tags", [])
+                        if emoji_tags:
+                            st.code(", ".join(emoji_tags[:10]), language=None)
+                            if len(emoji_tags) > 10:
+                                with st.expander("Show all tags"):
+                                    st.code(", ".join(emoji_tags), language=None)
+                        
+                        # Keywords
+                        st.write("**Keywords:**")
+                        emoji_keywords = emoji_seo_data.get("keywords", [])
+                        if emoji_keywords:
+                            st.code(", ".join(emoji_keywords), language=None)
+                        
+                        # Download SEO as JSON
+                        emoji_seo_json = json.dumps(emoji_seo_data, indent=2)
+                        st.download_button(
+                            "📥 Download SEO Data (JSON)",
+                            data=emoji_seo_json,
+                            file_name=f"emoji_{int(time.time())}_seo.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key=f"download_emoji_seo_json_{int(time.time())}"
+                        )
+                        
+                        # Download SEO as Text
+                        emoji_seo_text = f"""Title: {emoji_seo_data.get('title', '')}
+
+Description:
+{emoji_seo_data.get('description', '')}
+
+Alt Text:
+{emoji_seo_data.get('alt_text', '')}
+
+Tags:
+{', '.join(emoji_seo_data.get('tags', []))}
+
+Keywords:
+{', '.join(emoji_seo_data.get('keywords', []))}
+
+Search Terms:
+{emoji_seo_data.get('search_terms', '')}
+"""
+                        st.download_button(
+                            "📄 Download SEO Data (TXT)",
+                            data=emoji_seo_text,
+                            file_name=f"emoji_{int(time.time())}_seo.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                            key=f"download_emoji_seo_txt_{int(time.time())}"
+                        )
+                    
+                    # Create ZIP package with emoji + SEO + README
+                    st.divider()
+                    st.subheader("📦 Download Complete Package")
+                    
+                    import zipfile
+                    
+                    emoji_id = f"emoji_{int(time.time())}"
+                    zip_buffer = io.BytesIO()
+                    
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        # Add the emoji image
+                        zip_file.writestr(f"{emoji_id}.png", file_data_1540)
+                        
+                        # Add SEO JSON
+                        zip_file.writestr(f"{emoji_id}_seo.json", emoji_seo_json.encode('utf-8'))
+                        
+                        # Add SEO TXT
+                        zip_file.writestr(f"{emoji_id}_seo.txt", emoji_seo_text.encode('utf-8'))
+                        
+                        # Add README with complete details
+                        readme = f"""EMOJI PACKAGE - {emoji_id}
+{'=' * 60}
+
+GENERATION DETAILS:
+------------------
+Prompt: {emoji_prompt}
+Model: {emoji_model}
+Mode: {emoji_mode}
+Cost: ~$0.01
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+FILES INCLUDED:
+--------------
+1. {emoji_id}.png - The generated custom emoji
+2. {emoji_id}_seo.json - SEO metadata in JSON format
+3. {emoji_id}_seo.txt - SEO metadata in text format
+4. README.txt - This file
+
+SEO METADATA SUMMARY:
+--------------------
+Title: {emoji_seo_data.get('title', '')}
+Description: {emoji_seo_data.get('description', '')}
+Alt Text: {emoji_seo_data.get('alt_text', '')}
+Tags: {', '.join(emoji_seo_data.get('tags', [])[:10])}
+Keywords: {', '.join(emoji_seo_data.get('keywords', [])[:10])}
+
+USAGE TIPS:
+----------
+- Resize to 128x128 or 256x256 for optimal display
+- Use in chat apps, social media, or custom stickers
+- PNG format with transparency support
+- Perfect for Discord, Slack, Telegram custom emojis
+
+{'=' * 60}
+Generated by AI Image Factory - Emoji Tab
+"""
+                        zip_file.writestr("README.txt", readme.encode('utf-8'))
+                    
+                    zip_buffer.seek(0)
+                    zip_data = zip_buffer.getvalue()
+                    
+                    st.download_button(
+                        "📦 Download Complete Package (ZIP)",
+                        data=zip_data,
+                        file_name=f"{emoji_id}_complete.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key=f"download_emoji_zip_{int(time.time())}"
+                    )
+                    
+                    st.caption("📦 Includes: Emoji + SEO JSON + SEO TXT + README")
                     
                     st.info("💰 Cost: ~$0.01")
                     
@@ -2021,7 +2485,8 @@ with tab6:
                         with open(upload_path, "wb") as f:
                             f.write(sketch_file.getbuffer())
                         
-                        os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                        if not setup_replicate_token():
+                            st.stop()
                         
                         # Convert to data URI
                         image_uri = image_to_data_uri(upload_path)
@@ -2161,7 +2626,8 @@ with tab7:
                         with open(upload_path, "wb") as f:
                             f.write(restore_file.getbuffer())
                         
-                        os.environ["REPLICATE_API_TOKEN"] = get_api_key("REPLICATE_API_TOKEN", "")
+                        if not setup_replicate_token():
+                            st.stop()
                         
                         # Convert to data URI
                         image_uri = image_to_data_uri(upload_path)
