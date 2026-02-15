@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-#from dotenv import load_dotenv
+from dotenv import load_dotenv
 import time
 from datetime import datetime
 import json
@@ -22,11 +22,11 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 # Optional: python-dotenv for local development
-#try:
-    #from dotenv import load_dotenv
-    #load_dotenv()
-#except ImportError:
-    #pass  # Not needed on Streamlit Cloud
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Not needed on Streamlit Cloud
 
 # Import tempfile for Streamlit Cloud compatibility
 import tempfile
@@ -116,6 +116,135 @@ def setup_replicate_token():
 temp_dir = tempfile.gettempdir()
 OUTPUTS_DIR = Path(temp_dir) / "outputs"
 UPLOADS_DIR = Path(temp_dir) / "uploads"
+ADMIN_LOGS_DIR = Path(temp_dir) / "admin_logs"  # Admin logs directory
+
+# Admin Logger Class
+class AdminLogger:
+    """Log all generation activities for admin analysis"""
+    
+    @staticmethod
+    def log_generation(
+        design_id: str,
+        style: str,
+        niche: str,
+        text_overlay: str,
+        provider: str,
+        model: str,
+        prompt: str,
+        cost: float,
+        time: float,
+        image_path: str = None
+    ):
+        """Log a single generation event"""
+        import csv
+        
+        try:
+            # Ensure admin logs directory exists
+            ADMIN_LOGS_DIR.mkdir(exist_ok=True)
+            
+            log_file = ADMIN_LOGS_DIR / "generation_log.csv"
+            file_exists = log_file.exists()
+            
+            with open(log_file, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Write header if new file
+                if not file_exists:
+                    writer.writerow([
+                        'Timestamp', 'Design_ID', 'Style', 'Niche', 'Text_Overlay',
+                        'Provider', 'Model', 'Client_Prompt', 'AI_Prompt', 
+                        'Cost', 'Time_Seconds', 'Prompt_Quality_Score', 
+                        'Image_Quality_Score', 'Image_Path'
+                    ])
+                
+                # Score prompts (async, don't wait)
+                prompt_score = "pending"
+                image_score = "pending"
+                
+                # Try to score if API available
+                try:
+                    if get_api_key("OPENAI_API_KEY"):
+                        client_spec = f"Style: {style}, Niche: {niche}, Text: {text_overlay}"
+                        scores = AdminLogger._score_quality(client_spec, prompt, image_path)
+                        prompt_score = scores.get('prompt_score', 'N/A')
+                        image_score = scores.get('image_score', 'N/A')
+                except:
+                    pass  # Scoring is optional
+                
+                # Write log entry
+                client_spec = f"{style} × {niche}" + (f" + '{text_overlay}'" if text_overlay else "")
+                writer.writerow([
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    design_id,
+                    style,
+                    niche,
+                    text_overlay or 'None',
+                    provider,
+                    model,
+                    client_spec,
+                    prompt[:200] + '...' if len(prompt) > 200 else prompt,  # Truncate long prompts
+                    f"${cost:.4f}",
+                    f"{time:.2f}",
+                    prompt_score,
+                    image_score,
+                    image_path or 'N/A'
+                ])
+        except Exception as e:
+            print(f"Admin logging failed: {e}")  # Silent fail, don't interrupt user
+    
+    @staticmethod
+    def _score_quality(client_spec: str, ai_prompt: str, image_path: str = None) -> dict:
+        """Score the quality of prompt and image generation"""
+        try:
+            openai.api_key = get_api_key("OPENAI_API_KEY")
+            
+            # Score prompt quality (how well AI prompt matches client spec)
+            prompt_eval = f"""Rate from 1-10 how well this AI prompt matches the client specification.
+            
+Client Spec: {client_spec}
+AI Prompt: {ai_prompt}
+
+Consider: keyword inclusion, style accuracy, completeness.
+Respond with ONLY a number 1-10."""
+            
+            response = openai.chat.completions.create(
+                model="gpt-4o-mini",  # Cheap model for scoring
+                messages=[{"role": "user", "content": prompt_eval}],
+                max_tokens=10,
+                temperature=0.3
+            )
+            
+            prompt_score = response.choices[0].message.content.strip()
+            
+            # Image scoring would require vision model (expensive, skip for now)
+            image_score = "N/A"
+            
+            return {
+                'prompt_score': prompt_score,
+                'image_score': image_score
+            }
+        except:
+            return {'prompt_score': 'N/A', 'image_score': 'N/A'}
+    
+    @staticmethod
+    def get_log_path():
+        """Get the path to the generation log CSV"""
+        return ADMIN_LOGS_DIR / "generation_log.csv"
+    
+    @staticmethod
+    def create_admin_download_button():
+        """Create a download button for admin logs (only show if logs exist)"""
+        log_file = AdminLogger.get_log_path()
+        if log_file.exists():
+            with open(log_file, 'rb') as f:
+                return st.download_button(
+                    "📊 Download Admin Log (CSV)",
+                    data=f.read(),
+                    file_name=f"admin_generation_log_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    key="admin_log_download"
+                )
+        return None
 
 # Page config
 st.set_page_config(
@@ -132,6 +261,7 @@ if 'designs' not in st.session_state:
 # Create directories (using temp directory for Streamlit Cloud)
 OUTPUTS_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
+ADMIN_LOGS_DIR.mkdir(exist_ok=True)
 
 # Add warning about ephemeral storage on Streamlit Cloud
 if not os.path.exists('.env'):  # Likely running on Streamlit Cloud
@@ -237,6 +367,7 @@ Make it visually appealing, commercially viable, and on-trend."""
             "sdxl": "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             "flux-dev": "black-forest-labs/flux-dev",
             "flux-schnell": "black-forest-labs/flux-schnell",
+            "prunaai/p-image": "prunaai/p-image:8ead22db4c2b79f9e3a39b7d25bf2c6b02e79e0e3f86c3d2c7936f3d4be93d6c",
         }
         
         model_version = models.get(model, models["sdxl"])
@@ -598,6 +729,39 @@ class ImageProcessor:
 st.markdown('<div class="main-header">🏭 AI Image Factory</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">AI-Powered Image Generation & Editing</div>', unsafe_allow_html=True)
 
+# Admin Section (in sidebar)
+with st.sidebar:
+    st.markdown("### 👨‍💼 Admin Tools")
+    
+    # Show admin log download if logs exist
+    log_file = AdminLogger.get_log_path()
+    if log_file.exists():
+        with open(log_file, 'rb') as f:
+            log_data = f.read()
+            
+        st.download_button(
+            "📊 Download Generation Log",
+            data=log_data,
+            file_name=f"admin_log_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            help="Download admin analytics log (CSV format)",
+            use_container_width=True
+        )
+        
+        # Show log stats
+        try:
+            import csv
+            with open(log_file, 'r') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                st.caption(f"📈 Total generations logged: {len(rows)}")
+        except:
+            pass
+    else:
+        st.caption("No logs yet. Generate images to start logging.")
+    
+    st.divider()
+
 # Check API keys (needed for tab content)
 has_openai = bool(get_api_key("OPENAI_API_KEY"))
 has_replicate = bool(get_api_key("REPLICATE_API_TOKEN"))
@@ -792,6 +956,23 @@ with tab1:
                     text_overlay if text_overlay else None,
                     upscale
                 )
+                
+                # Log to admin (async, non-blocking)
+                try:
+                    AdminLogger.log_generation(
+                        design_id=design_id,
+                        style=style,
+                        niche=niche,
+                        text_overlay=text_overlay,
+                        provider=ai_provider,
+                        model=replicate_model if ai_provider == "replicate" else "dall-e-3",
+                        prompt=prompt,
+                        cost=cost,
+                        time=processing_time,
+                        image_path=output_path
+                    )
+                except:
+                    pass  # Silent fail, don't interrupt user experience
                 
                 # Step 4: Generate SEO metadata
                 st.info("🏷️ Generating SEO metadata...")
@@ -1114,7 +1295,7 @@ Generated by AI Image Factory
             if bulk_provider == "replicate":
                 bulk_replicate_model = st.selectbox(
                     "Replicate Model",
-                    ["sdxl", "flux-dev", "flux-schnell"],
+                    ["sdxl", "flux-dev", "flux-schnell", "prunaai/p-image"],
                     key="bulk_replicate_model"
                 )
             else:
@@ -1240,6 +1421,23 @@ Generated by AI Image Factory
                             'seo': seo_data  # Add SEO data to results
                         })
                         
+                        # Log to admin (bulk generation)
+                        try:
+                            AdminLogger.log_generation(
+                                design_id=design_id,
+                                style=combo['style'],
+                                niche=combo['niche'],
+                                text_overlay=combo['text'],
+                                provider=bulk_provider,
+                                model=bulk_replicate_model if bulk_provider == "replicate" else "dall-e-3",
+                                prompt=prompt,
+                                cost=cost,
+                                time=processing_time,
+                                image_path=output_path
+                            )
+                        except:
+                            pass  # Silent fail
+                        
                         status_text.text(f"✅ Generated {idx+1}/{total} in {processing_time:.1f}s")
                         
                         # Rate limiting delay (skip after last generation)
@@ -1349,6 +1547,7 @@ Search Terms:
                         # Add metadata file
                         metadata = "BATCH GENERATION METADATA\n"
                         metadata += "=" * 50 + "\n\n"
+                        metadata += "CLIENT SPECIFICATIONS:\n"
                         metadata += f"Total Designs: {len(successful_results)}\n"
                         metadata += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                         metadata += "\n" + "=" * 50 + "\n\n"
