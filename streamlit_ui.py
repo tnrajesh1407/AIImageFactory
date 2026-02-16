@@ -6,6 +6,10 @@ from datetime import datetime
 import json
 from pathlib import Path
 import base64
+import logging
+
+# Suppress Streamlit MediaFileHandler warnings (harmless cache warnings)
+logging.getLogger('streamlit.runtime.media_file_handler').setLevel(logging.ERROR)
 
 # AI imports
 import openai
@@ -22,11 +26,11 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 # Optional: python-dotenv for local development
-#try:
-    #from dotenv import load_dotenv
-    #load_dotenv()
-#except ImportError:
-    #pass  # Not needed on Streamlit Cloud
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Not needed on Streamlit Cloud (will use st.secrets instead)
 
 # Import tempfile for Streamlit Cloud compatibility
 import tempfile
@@ -320,11 +324,16 @@ class AIService:
         system_prompt = """You are an expert at creating prompts for AI image generation for print-on-demand designs.
 Create detailed, specific prompts that will result in commercially viable designs.
 Focus on clear composition, professional quality, and printable aesthetics.
-Keep prompts under 400 characters."""
+Keep prompts under 400 characters.
+
+CRITICAL: Always end prompts with "NO TEXT, NO WORDS, NO LETTERS" to prevent AI from adding garbled text."""
         
         user_prompt = f"""Create an image generation prompt for a {style} style design in the {niche} niche.
 The design should be suitable for print-on-demand products like t-shirts, mugs, and posters.
-Make it visually appealing, commercially viable, and on-trend."""
+Make it visually appealing, commercially viable, and on-trend.
+
+IMPORTANT: Do NOT include any text, words, letters, or typography in the design. 
+The prompt should explicitly state "no text, no words, no letters, clean design"."""
         
         if provider == "openai" and get_api_key("OPENAI_API_KEY"):
             openai.api_key = get_api_key("OPENAI_API_KEY")
@@ -337,10 +346,16 @@ Make it visually appealing, commercially viable, and on-trend."""
                 temperature=0.8,
                 max_tokens=200
             )
-            return response.choices[0].message.content.strip()
+            generated = response.choices[0].message.content.strip()
+            
+            # Force append text prevention if not already included
+            if "no text" not in generated.lower():
+                generated += ", NO TEXT, NO WORDS, NO LETTERS, clean design"
+            
+            return generated
         else:
-            # Fallback prompt
-            return f"A {style} style {niche} design, professional quality, suitable for print on demand, vector art style, clean composition, commercial appeal"
+            # Fallback prompt with text prevention
+            return f"A {style} style {niche} design, professional quality, suitable for print on demand, vector art style, clean composition, commercial appeal, NO TEXT, NO WORDS, NO LETTERS, clean design without typography"
     
     @staticmethod
     def generate_image_openai(prompt: str) -> str:
@@ -367,15 +382,19 @@ Make it visually appealing, commercially viable, and on-trend."""
             "sdxl": "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             "flux-dev": "black-forest-labs/flux-dev",
             "flux-schnell": "black-forest-labs/flux-schnell",
-            "prunaai/p-image": "prunaai/p-image",
+            "prunaai/p-image": "prunaai/p-image:8ead22db4c2b79f9e3a39b7d25bf2c6b02e79e0e3f86c3d2c7936f3d4be93d6c",
         }
         
         model_version = models.get(model, models["sdxl"])
+        
+        # Negative prompt to prevent unwanted text generation
+        negative_prompt = "text, words, letters, typography, watermark, signature, numbers, writing, characters, symbols, gibberish, random text, ugly text, blurry text"
         
         output = replicate.run(
             model_version,
             input={
                 "prompt": prompt,
+                "negative_prompt": negative_prompt,
                 "width": 1024,
                 "height": 1024,
                 "num_outputs": 1
@@ -392,17 +411,11 @@ class SEOGenerator:
     def encode_image_base64(image_path: str) -> tuple:
         """Encode image to base64 for Anthropic API and detect media type"""
         from PIL import Image as PILImage
+        import io
         
-        # Read the image file
-        with open(image_path, "rb") as image_file:
-            image_bytes = image_file.read()
-        
-        # Detect the actual image format using PIL
-        try:
-            img = PILImage.open(image_path)
-            image_format = img.format.lower() if img.format else 'png'
-        except:
-            image_format = 'png'  # Default fallback
+        # Open the image
+        img = PILImage.open(image_path)
+        image_format = img.format.lower() if img.format else 'png'
         
         # Map image format to media type
         media_type_map = {
@@ -412,8 +425,61 @@ class SEOGenerator:
             'webp': 'image/webp',
             'gif': 'image/gif'
         }
-        
         media_type = media_type_map.get(image_format, 'image/png')
+        
+        # Check file size and resize if needed
+        # CRITICAL: Base64 encoding adds ~33% overhead!
+        # So we need to target 3.7 MB to stay under 5 MB after encoding
+        max_encoded_size = 5 * 1024 * 1024  # 5 MB limit for API
+        max_file_size = int(max_encoded_size / 1.4)  # Account for base64 overhead (~40% buffer)
+        
+        # Save to bytes to check size
+        img_bytes_io = io.BytesIO()
+        
+        # For PNG with transparency, keep RGBA. For others, convert to RGB for smaller size
+        if image_format == 'png' and img.mode == 'RGBA':
+            img.save(img_bytes_io, format='PNG', optimize=True)
+        else:
+            # Convert to JPEG for smaller file size
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            img.save(img_bytes_io, format='JPEG', quality=85, optimize=True)
+            image_format = 'jpeg'
+            media_type = 'image/jpeg'
+        
+        img_bytes_io.seek(0)
+        current_size = len(img_bytes_io.getvalue())
+        
+        # If image is too large, resize it
+        if current_size > max_file_size:
+            # Calculate scale factor to get well under limit
+            target_size = max_file_size * 0.7  # Target 70% of safe limit for extra safety
+            scale_factor = (target_size / current_size) ** 0.5
+            
+            new_width = int(img.width * scale_factor)
+            new_height = int(img.height * scale_factor)
+            
+            # Resize image
+            img_resized = img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
+            
+            # Save resized image with optimization
+            img_bytes_io = io.BytesIO()
+            if image_format == 'png' and img_resized.mode == 'RGBA':
+                img_resized.save(img_bytes_io, format='PNG', optimize=True)
+            else:
+                if img_resized.mode in ('RGBA', 'LA', 'P'):
+                    img_resized = img_resized.convert('RGB')
+                img_resized.save(img_bytes_io, format='JPEG', quality=80, optimize=True)
+                media_type = 'image/jpeg'
+            
+            img_bytes_io.seek(0)
+            final_size = len(img_bytes_io.getvalue())
+            
+            print(f"Resized image from {current_size / (1024*1024):.2f} MB to {final_size / (1024*1024):.2f} MB for Vision API")
+            print(f"Estimated base64 size: {final_size * 1.37 / (1024*1024):.2f} MB (target: <5 MB)")
+        
+        # Get final bytes
+        image_bytes = img_bytes_io.getvalue()
         
         # Encode to base64
         base64_data = base64.b64encode(image_bytes).decode('utf-8')
@@ -664,10 +730,135 @@ class ImageProcessor:
     
     @staticmethod
     def upscale_image(image: Image.Image, scale: int = 2) -> Image.Image:
-        """Upscale image"""
+        """Upscale image using simple resize (fallback)"""
         new_width = image.width * scale
         new_height = image.height * scale
         return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    @staticmethod
+    def remove_background_replicate(image_path: str) -> str:
+        """Remove background using Replicate Rembg"""
+        import requests
+        import replicate
+        from PIL import Image as PILImage
+        
+        try:
+            if not setup_replicate_token():
+                st.warning("⚠️ Replicate token not configured. Skipping background removal.")
+                return image_path  # Return original if no token
+            
+            st.info("🔄 Removing background with AI...")
+            
+            # Use Rembg on Replicate
+            output = replicate.run(
+                "cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003",
+                input={
+                    "image": open(image_path, "rb")
+                }
+            )
+            
+            # Handle FileOutput object (Replicate returns this type)
+            if hasattr(output, 'url'):
+                result_url = output.url
+            elif hasattr(output, '__iter__') and not isinstance(output, str):
+                # If it's iterable (like a list), get first item
+                output_list = list(output)
+                if output_list and hasattr(output_list[0], 'url'):
+                    result_url = output_list[0].url
+                else:
+                    result_url = str(output_list[0]) if output_list else str(output)
+            else:
+                # Assume it's a URL string
+                result_url = str(output)
+            
+            # Download result
+            result_data = requests.get(result_url, timeout=30).content
+            
+            # Open image and ensure it's RGBA
+            img = PILImage.open(io.BytesIO(result_data))
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            
+            # Save transparent PNG
+            output_path = image_path.replace('.png', '_nobg.png')
+            img.save(output_path, "PNG", dpi=(300, 300))
+            
+            st.success("✅ Background removed!")
+            return output_path
+            
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Check for rate limiting
+            if '429' in error_msg or 'throttled' in error_msg.lower():
+                st.error("❌ Rate limit reached! Add $5+ to Replicate account or wait 60 seconds.")
+                st.info("💡 Add credits at: https://replicate.com/account/billing")
+            else:
+                st.error(f"❌ Background removal failed: {error_msg[:150]}")
+            
+            st.warning("⚠️ Continuing with original image...")
+            return image_path  # Return original on error
+    
+    @staticmethod
+    def upscale_replicate(image_path: str, scale: int = 4) -> str:
+        """Upscale image using Real-ESRGAN on Replicate (up to 4x)"""
+        import requests
+        import replicate
+        
+        try:
+            if not setup_replicate_token():
+                st.warning("⚠️ Replicate token not configured. Skipping AI upscaling.")
+                return image_path  # Return original if no token
+            
+            st.info(f"🔄 AI Upscaling {scale}x with Real-ESRGAN...")
+            
+            # Use Real-ESRGAN on Replicate
+            output = replicate.run(
+                "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
+                input={
+                    "image": open(image_path, "rb"),
+                    "scale": scale,
+                    "face_enhance": False
+                }
+            )
+            
+            # Handle FileOutput object (Replicate returns this type)
+            if hasattr(output, 'url'):
+                result_url = output.url
+            elif hasattr(output, '__iter__') and not isinstance(output, str):
+                # If it's iterable (like a list), get first item
+                output_list = list(output)
+                if output_list and hasattr(output_list[0], 'url'):
+                    result_url = output_list[0].url
+                else:
+                    result_url = str(output_list[0]) if output_list else str(output)
+            else:
+                # Assume it's a URL string
+                result_url = str(output)
+            
+            # Download result
+            result_data = requests.get(result_url, timeout=60).content
+            
+            # Save upscaled image
+            output_path = image_path.replace('.png', f'_x{scale}.png')
+            with open(output_path, 'wb') as f:
+                f.write(result_data)
+            
+            st.success(f"✅ Upscaled {scale}x!")
+            return output_path
+            
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Check for rate limiting
+            if '429' in error_msg or 'throttled' in error_msg.lower():
+                st.error("❌ Rate limit reached! Add $5+ to Replicate account or wait 60 seconds.")
+                st.info("💡 Add credits at: https://replicate.com/account/billing")
+            else:
+                st.error(f"❌ Upscaling failed: {error_msg[:150]}")
+            
+            st.warning("⚠️ Continuing with standard upscale...")
+            return image_path  # Return original on error
     
     @staticmethod
     def add_text_overlay(image: Image.Image, text: str) -> Image.Image:
@@ -702,26 +893,68 @@ class ImageProcessor:
         return img
     
     @staticmethod
-    def process_design(image_url: str, design_id: str, text_overlay: str = None, upscale: bool = True):
-        """Process the design"""
+    def process_design(image_url: str, design_id: str, text_overlay: str = None, upscale: bool = True, 
+                      remove_bg: bool = False, upscale_method: str = "standard", upscale_scale: int = 2):
+        """
+        Process the design with optional background removal and advanced upscaling
+        
+        Args:
+            image_url: URL of generated image
+            design_id: Unique ID for the design
+            text_overlay: Optional text to add
+            upscale: Whether to upscale
+            remove_bg: Whether to remove background (Replicate)
+            upscale_method: "standard" (local 2x) or "pro" (Replicate 4x)
+            upscale_scale: Scale factor (2 for standard, 4 for pro)
+        """
         # Download
         image_data = ImageProcessor.download_image(image_url)
-        image = Image.open(io.BytesIO(image_data))
         
-        if image.mode != 'RGBA':
-            image = image.convert('RGBA')
+        # Save temporary file
+        temp_path = str(OUTPUTS_DIR / f"{design_id}_temp.png")
+        with open(temp_path, 'wb') as f:
+            f.write(image_data)
         
-        # Upscale
+        current_path = temp_path
+        
+        # Step 1: Remove background if requested (before upscaling for better quality)
+        if remove_bg:
+            current_path = ImageProcessor.remove_background_replicate(current_path)
+            # Add delay to avoid rate limiting if we're going to upscale next
+            if upscale and upscale_method == "pro":
+                st.info("⏳ Waiting 10 seconds to avoid rate limits...")
+                time.sleep(10)
+        
+        # Step 2: Upscale
         if upscale:
-            image = ImageProcessor.upscale_image(image, scale=2)
+            if upscale_method == "pro" and upscale_scale == 4:
+                # Use Replicate Real-ESRGAN for 4x upscaling
+                current_path = ImageProcessor.upscale_replicate(current_path, scale=4)
+            else:
+                # Use standard local upscaling (2x)
+                image = Image.open(current_path)
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
+                image = ImageProcessor.upscale_image(image, scale=upscale_scale)
+                current_path = str(OUTPUTS_DIR / f"{design_id}_upscaled.png")
+                image.save(current_path, "PNG", dpi=(300, 300), quality=100)
         
-        # Add text
+        # Step 3: Add text overlay if requested
         if text_overlay:
+            image = Image.open(current_path)
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
             image = ImageProcessor.add_text_overlay(image, text_overlay)
+            current_path = str(OUTPUTS_DIR / f"{design_id}_text.png")
+            image.save(current_path, "PNG", dpi=(300, 300), quality=100)
         
-        # Save
+        # Step 4: Save final output
         output_path = str(OUTPUTS_DIR / f"{design_id}.png")
-        image.save(output_path, "PNG", dpi=(300, 300), quality=100)
+        
+        # If current_path is different from output_path, copy it
+        if current_path != output_path:
+            image = Image.open(current_path)
+            image.save(output_path, "PNG", dpi=(300, 300), quality=100)
         
         return output_path
 
@@ -870,20 +1103,50 @@ with tab1:
         if ai_provider == "replicate":
             replicate_model = st.selectbox(
                 "Replicate Model",
-                ["prunaai/p-image", "flux-dev", "flux-schnell"]
+                ["sdxl", "prunaai/p-image", "flux-dev", "flux-schnell"],
+                help="SDXL: Fast & cheap. Flux: Higher quality. prunaai: Experimental"
             )
         else:
-            replicate_model = "sdxl"
+            replicate_model = "sdxl"  # Default fallback
         
-        upscale = st.checkbox("Upscale Image (2x)", value=True)
+        st.divider()
+        st.subheader("🎯 Print-Ready Options")
+        
+        # Upscaling options
+        upscale_option = st.radio(
+            "Upscaling",
+            ["Standard (2x) - Fast", "Pro (4x) - Print Quality"],
+            help="Standard: 2x upscale (2048×2048). Pro: 4x upscale with AI (4096×4096) +$0.002"
+        )
+        
+        upscale_pro = upscale_option == "Pro (4x) - Print Quality"
+        
+        # Background removal option
+        remove_bg = st.checkbox(
+            "Remove Background (Transparent PNG)",
+            value=False,
+            help="Uses AI to remove background. Perfect for POD. +$0.001"
+        )
         
         # Cost estimation
         if ai_provider == "openai":
-            estimated_cost = "$0.09"
+            base_cost = 0.09
         else:
-            estimated_cost = "$0.003"
+            base_cost = 0.003
         
-        st.info(f"💰 Estimated Cost: {estimated_cost}")
+        # Add costs for extras
+        total_cost = base_cost
+        if upscale_pro:
+            total_cost += 0.002
+        if remove_bg:
+            total_cost += 0.001
+        
+        st.info(f"💰 Total Cost: ${total_cost:.3f}")
+        
+        # Show what you get
+        resolution = "4096×4096" if upscale_pro else "2048×2048"
+        bg_status = "Transparent" if remove_bg else "With Background"
+        st.caption(f"📐 Output: {resolution}, 300 DPI, {bg_status}")
         
         # Examples for inspiration
         with st.expander("💡 Need Ideas? Click for Examples"):
@@ -949,12 +1212,22 @@ with tab1:
                     cost = 0.003
                 
                 # Step 3: Process image
-                st.info("⚙️ Processing image...")
+                processing_msg = "⚙️ Processing"
+                if remove_bg:
+                    processing_msg += " + Removing background"
+                if upscale_pro:
+                    processing_msg += " + AI upscaling 4x"
+                processing_msg += "..."
+                
+                st.info(processing_msg)
                 output_path = ImageProcessor.process_design(
                     image_url, 
                     design_id, 
                     text_overlay if text_overlay else None,
-                    upscale
+                    upscale=True,  # Always upscale
+                    remove_bg=remove_bg,
+                    upscale_method="pro" if upscale_pro else "standard",
+                    upscale_scale=4 if upscale_pro else 2
                 )
                 
                 # Log to admin (async, non-blocking)
@@ -1144,6 +1417,14 @@ Search Terms:
                         zip_file.writestr(f"{design_id}_seo.txt", seo_text.encode('utf-8'))
                         
                         # Add README with design info
+                        # Get image specifications
+                        from PIL import Image as PILImage
+                        img = PILImage.open(output_path)
+                        img_width, img_height = img.size
+                        img_mode = img.mode
+                        has_transparency = img_mode in ('RGBA', 'LA') or (img_mode == 'P' and 'transparency' in img.info)
+                        dpi_info = img.info.get('dpi', (300, 300))
+                        
                         readme = f"""DESIGN PACKAGE - {design_id}
 {'=' * 60}
 
@@ -1153,6 +1434,16 @@ Style: {style}
 Niche: {niche}
 Text Overlay: {text_overlay if text_overlay else 'None'}
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+IMAGE SPECIFICATIONS:
+--------------------
+Resolution: {img_width} × {img_height} pixels
+DPI: {dpi_info[0]} DPI (Print Quality)
+Color Mode: {img_mode}
+Background: {'Transparent (RGBA)' if has_transparency else 'Solid Background'}
+Format: PNG
+File Size: {os.path.getsize(output_path) / (1024*1024):.2f} MB
+Print Size @ 300 DPI: {img_width/300:.2f}" × {img_height/300:.2f}"
 
 FILES INCLUDED:
 --------------
@@ -1168,6 +1459,13 @@ Description: {seo_data.get('description', '')}
 Alt Text: {seo_data.get('alt_text', '')}
 Tags: {', '.join(seo_data.get('tags', [])[:10])}
 Keywords: {', '.join(seo_data.get('keywords', [])[:10])}
+
+USAGE RECOMMENDATIONS:
+---------------------
+✓ Perfect for print-on-demand (t-shirts, mugs, posters)
+✓ Suitable for web and digital use
+✓ High resolution for professional printing
+{'✓ Transparent background - ready for any product color' if has_transparency else '✓ Solid background included'}
 
 {'=' * 60}
 Generated by AI Image Factory
@@ -1291,17 +1589,39 @@ Generated by AI Image Factory
             else:
                 bulk_provider = st.radio("AI Provider", bulk_provider_options, key="bulk_provider")
             
-            # Model selection for Replicate
+            # Model selection for Replicate - Always show if replicate is available
             if bulk_provider == "replicate":
                 bulk_replicate_model = st.selectbox(
                     "Replicate Model",
-                    ["sdxl", "flux-dev", "flux-schnell", "prunaai/p-image"],
-                    key="bulk_replicate_model"
+                    ["sdxl", "prunaai/p-image", "flux-dev", "flux-schnell"],
+                    key="bulk_replicate_model",
+                    help="SDXL: Fast & cheap ($0.003). Flux: Higher quality ($0.003). prunaai: Experimental ($0.0025)"
                 )
             else:
-                bulk_replicate_model = "sdxl"
+                bulk_replicate_model = "sdxl"  # Default when using OpenAI
             
-            bulk_upscale = st.checkbox("Upscale All Images (2x)", value=False, key="bulk_upscale")
+            st.divider()
+            st.subheader("🎯 Print-Ready Options")
+            
+            # Upscaling options for bulk
+            bulk_upscale_option = st.radio(
+                "Upscaling",
+                ["Standard (2x) - Fast", "Pro (4x) - Print Quality"],
+                key="bulk_upscale_option",
+                help="Standard: 2x upscale (2048×2048). Pro: 4x upscale with AI (4096×4096) +$0.002 each"
+            )
+            
+            bulk_upscale_pro = bulk_upscale_option == "Pro (4x) - Print Quality"
+            
+            # Background removal option for bulk
+            bulk_remove_bg = st.checkbox(
+                "Remove Background (Transparent PNG)",
+                value=False,
+                key="bulk_remove_bg",
+                help="Uses AI to remove background. Perfect for POD. +$0.001 each"
+            )
+            
+            st.divider()
             
             # Rate limiting setting
             rate_limit_delay = st.slider(
@@ -1317,6 +1637,33 @@ Generated by AI Image Factory
             if st.session_state.bulk_combinations:
                 batch_count = len(st.session_state.bulk_combinations)
                 
+                # SAFEGUARD: Batch size limits
+                MAX_BATCH_SIZE = 20
+                RECOMMENDED_BATCH_SIZE = 15
+                
+                # Check batch size and show warnings
+                if batch_count > MAX_BATCH_SIZE:
+                    st.error(f"⚠️ **Batch Too Large!** ({batch_count} designs)")
+                    st.error(f"❌ Maximum batch size is {MAX_BATCH_SIZE} designs")
+                    st.warning(f"💡 **Please remove {batch_count - MAX_BATCH_SIZE} combinations**")
+                    st.info("""
+                    🎯 **Why the limit?**
+                    Large batches can cause:
+                    - Memory crashes
+                    - Rate limit errors
+                    - Request timeouts
+                    
+                    **Recommendation:** Generate in multiple batches of {MAX_BATCH_SIZE}
+                    """)
+                    batch_size_ok = False
+                elif batch_count > RECOMMENDED_BATCH_SIZE:
+                    st.warning(f"⚠️ Large batch ({batch_count} designs) - May take a while!")
+                    st.info(f"💡 For best results, consider splitting into batches of {RECOMMENDED_BATCH_SIZE}")
+                    batch_size_ok = True
+                else:
+                    batch_size_ok = True
+                
+                # Base generation cost
                 if bulk_provider == "openai":
                     batch_cost = batch_count * 0.09
                     time_per_image = 45
@@ -1324,29 +1671,54 @@ Generated by AI Image Factory
                     batch_cost = batch_count * 0.003
                     time_per_image = 30
                 
+                # Add costs for extras
+                if bulk_upscale_pro:
+                    batch_cost += batch_count * 0.002
+                    time_per_image += 15
+                if bulk_remove_bg:
+                    batch_cost += batch_count * 0.001
+                    time_per_image += 5
+                    if bulk_upscale_pro:
+                        time_per_image += 10  # Delay between API calls
+                
                 total_time = (batch_count * time_per_image) + ((batch_count - 1) * rate_limit_delay)
                 minutes = int(total_time // 60)
                 seconds = int(total_time % 60)
                 
-                st.info(f"💰 **Estimated Cost:** ${batch_cost:.3f}")
+                # Show what they're getting
+                resolution = "4096×4096" if bulk_upscale_pro else "2048×2048"
+                bg_status = "Transparent" if bulk_remove_bg else "With Background"
+                
+                st.info(f"💰 **Total Cost:** ${batch_cost:.3f}")
                 st.info(f"⏱️ **Estimated Time:** {minutes}m {seconds}s")
+                st.caption(f"📐 Output: {resolution}, 300 DPI, {bg_status}")
                 st.caption(f"Includes {rate_limit_delay}s delay between generations")
         
         # Generate Batch Button
         st.divider()
         
         if st.session_state.bulk_combinations:
+            # Check if batch size is acceptable before showing button
+            batch_count = len(st.session_state.bulk_combinations)
+            button_disabled = (bulk_provider is None) or (batch_count > MAX_BATCH_SIZE)
+            
             if st.button("🚀 Generate Batch", type="primary", use_container_width=True, 
-                        key="generate_bulk_btn", disabled=(bulk_provider is None)):
+                        key="generate_bulk_btn", disabled=button_disabled):
                 
                 combinations = st.session_state.bulk_combinations
                 total = len(combinations)
+                
+                # Final safety check
+                if total > MAX_BATCH_SIZE:
+                    st.error(f"❌ Cannot generate: Batch size ({total}) exceeds limit ({MAX_BATCH_SIZE})")
+                    st.stop()
                 
                 # Progress tracking
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
                 results = []
+                successful_results = []  # Track successful generations
                 
                 for idx, combo in enumerate(combinations):
                     status_text.text(f"🎨 Generating {idx+1}/{total}: {combo['style']} × {combo['niche']}...")
@@ -1366,13 +1738,22 @@ Generated by AI Image Factory
                             image_url = AIService.generate_image_replicate(prompt, bulk_replicate_model)
                             cost = 0.003
                         
-                        # Process image
+                        # Add costs for extras
+                        if bulk_upscale_pro:
+                            cost += 0.002
+                        if bulk_remove_bg:
+                            cost += 0.001
+                        
+                        # Process image with print-ready options
                         design_id = f"bulk_{idx+1}_{int(time.time())}"
                         output_path = ImageProcessor.process_design(
                             image_url,
                             design_id,
                             combo['text'] if combo['text'] else None,
-                            bulk_upscale
+                            upscale=True,
+                            remove_bg=bulk_remove_bg,
+                            upscale_method="pro" if bulk_upscale_pro else "standard",
+                            upscale_scale=4 if bulk_upscale_pro else 2
                         )
                         
                         # Generate SEO metadata for bulk design
@@ -1421,6 +1802,8 @@ Generated by AI Image Factory
                             'seo': seo_data  # Add SEO data to results
                         })
                         
+                        successful_results.append(results[-1])  # Track successful generation
+                        
                         # Log to admin (bulk generation)
                         try:
                             AdminLogger.log_generation(
@@ -1439,6 +1822,10 @@ Generated by AI Image Factory
                             pass  # Silent fail
                         
                         status_text.text(f"✅ Generated {idx+1}/{total} in {processing_time:.1f}s")
+                        
+                        # SAFEGUARD: Memory cleanup after each image
+                        import gc
+                        gc.collect()  # Force garbage collection
                         
                         # Rate limiting delay (skip after last generation)
                         if idx < total - 1:
@@ -1460,47 +1847,37 @@ Generated by AI Image Factory
                 status_text.text("🎉 Batch generation complete!")
                 progress_bar.progress(1.0)
                 
-                # Display results summary
-                st.success(f"✅ Successfully generated {len([r for r in results if 'path' in r])} out of {total} designs!")
+                # Brief pause for user to see completion
+                time.sleep(1)
+                
+                # Clear progress indicators immediately
+                status_text.empty()
+                progress_bar.empty()
+                
+                # Clear memory from generation loop
+                import gc
+                gc.collect()
+                
+                # Display results summary (lightweight - no heavy image rendering)
+                successful_count = len([r for r in results if 'path' in r])
+                st.success(f"✅ Successfully generated {successful_count} out of {total} designs!")
                 
                 total_cost = sum(r.get('cost', 0) for r in results)
                 total_time = sum(r.get('time', 0) for r in results)
                 st.info(f"💰 Total Cost: ${total_cost:.3f} | ⏱️ Total Time: {int(total_time//60)}m {int(total_time%60)}s")
                 
-                # Display results in grid
-                st.divider()
-                st.subheader("📸 Generated Designs")
+                if successful_count < total:
+                    st.warning(f"⚠️ {total - successful_count} designs failed. Check errors below.")
                 
-                cols = st.columns(3)
+                # Show failed designs summary (if any)
+                failed_results = [r for r in results if 'error' in r]
+                if failed_results:
+                    st.divider()
+                    st.subheader("❌ Failed Designs")
+                    for result in failed_results:
+                        st.error(f"**{result['style']}** × **{result['niche']}**: {result.get('error', 'Unknown error')}")
                 
-                for idx, result in enumerate(results):
-                    if 'path' in result:
-                        with cols[idx % 3]:
-                            st.image(result['path'], use_container_width=True)
-                            st.caption(f"**{result['style']}** × **{result['niche']}**")
-                            if result['text']:
-                                st.caption(f"Text: '{result['text']}'")
-                            
-                            # Download button for each image
-                            with open(result['path'], "rb") as f:
-                                img_data = f.read()
-                            
-                            st.download_button(
-                                "⬇️ Download",
-                                data=img_data,
-                                file_name=f"{result['id']}.png",
-                                mime="image/png",
-                                key=f"bulk_dl_{result['id']}",
-                                use_container_width=True
-                            )
-                            
-                            st.caption(f"${result['cost']:.3f} • {result['time']:.1f}s")
-                    else:
-                        with cols[idx % 3]:
-                            st.error(f"Failed: {result['style']} × {result['niche']}")
-                            st.caption(f"Error: {result.get('error', 'Unknown')}")
-                
-                # Download all as ZIP
+                # Download all as ZIP (skip individual image display to prevent hanging)
                 st.divider()
                 st.subheader("📦 Download All Results")
                 
@@ -1553,14 +1930,38 @@ Search Terms:
                         metadata += "\n" + "=" * 50 + "\n\n"
                         
                         for idx, r in enumerate(successful_results):
+                            # Get image properties
+                            try:
+                                from PIL import Image
+                                img = Image.open(r['path'])
+                                img_width, img_height = img.size
+                                img_mode = img.mode
+                                img_dpi = img.info.get('dpi', (300, 300))
+                                is_transparent = img_mode in ['RGBA', 'LA'] or (img_mode == 'P' and 'transparency' in img.info)
+                            except:
+                                img_width, img_height = "Unknown", "Unknown"
+                                img_mode = "Unknown"
+                                img_dpi = (300, 300)
+                                is_transparent = False
+                            
                             metadata += f"Design {idx+1}:\n"
                             metadata += f"  ID: {r['id']}\n"
                             metadata += f"  Style: {r['style']}\n"
                             metadata += f"  Niche: {r['niche']}\n"
                             if r['text']:
                                 metadata += f"  Text: {r['text']}\n"
+                            
+                            # Add image properties
+                            metadata += f"\n  IMAGE PROPERTIES:\n"
+                            metadata += f"  Resolution: {img_width}×{img_height} pixels\n"
+                            metadata += f"  DPI: {img_dpi[0]}\n"
+                            metadata += f"  Color Mode: {img_mode}\n"
+                            metadata += f"  Background: {'Transparent' if is_transparent else 'Solid'}\n"
+                            metadata += f"  Format: PNG\n"
+                            
                             if 'seo' in r and r['seo']:
-                                metadata += f"  SEO Title: {r['seo'].get('title', 'N/A')}\n"
+                                metadata += f"\n  SEO METADATA:\n"
+                                metadata += f"  Title: {r['seo'].get('title', 'N/A')}\n"
                             metadata += "\n"
                         
                         zip_file.writestr("batch_metadata.txt", metadata)
@@ -1579,6 +1980,17 @@ Search Terms:
                     )
                     
                     st.caption(f"📦 ZIP contains {len(successful_results)} images + SEO files (JSON + TXT) + metadata.txt")
+                    st.success("✅ Batch complete! Download your ZIP file above.")
+                    
+                    # Aggressive memory cleanup after download button
+                    del zip_buffer
+                    del zip_data
+                    del successful_results
+                    del results
+                    gc.collect()
+                    
+                else:
+                    st.error("❌ No successful designs to download.")
 
                 
                 # Clear combinations after successful batch
